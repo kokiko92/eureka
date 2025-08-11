@@ -11,6 +11,25 @@
   const SUPABASE_KEY = "TA_PUBLIC_API_KEY_ICI";
   const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 </script>
+    <script>
+document.getElementById("signup-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("signup-email").value;
+  const password = document.getElementById("signup-password").value;
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) alert("Erreur : " + error.message);
+  else alert("Compte créé ! Vérifie tes emails pour confirmer.");
+});
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const email = document.getElementById("login-email").value;
+  const password = document.getElementById("login-password").value;
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) alert("Erreur : " + error.message);
+  else alert("Connecté !");
+});
+</script>
 <body>
     Hello
     <!-- Formulaire inscription -->
@@ -30,4 +49,5 @@
 </body>
 
 </html>
+
 

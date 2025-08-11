@@ -841,6 +841,20 @@
           countdownInterval = setInterval(tick, 250);
         }
 
+        async function tryBuzz(userId) {
+          if (!currentRoomCode) return;
+          try {
+            await supabase.rpc('eureka_try_buzz', { p_code: currentRoomCode, p_user: userId });
+          } catch (_) {}
+        }
+
+        async function releaseLock() {
+          if (!currentRoomCode) return;
+          try {
+            await supabase.rpc('eureka_release_lock', { p_code: currentRoomCode });
+          } catch (_) {}
+        }
+
         function showVoteUI(show) {
           voteArea.classList.toggle('hidden', !show);
         }

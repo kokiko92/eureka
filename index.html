@@ -556,10 +556,10 @@
           const { data: authData } = await supabase.auth.getUser();
           const user = authData?.user;
           if (!user) return;
-          const displayName = (user.email || 'Joueur').split('@')[0];
+          const displayName = (user.user_metadata?.name || user.email || 'Joueur').split('@')[0];
           // Try to insert, ignore if exists (policy should prevent duplicates or use unique index)
           await supabase.from(TABLE_PLAYERS).upsert(
-            { game_code: code, user_id: user.id, name: displayName },
+            { game_code: code, user_id: user.id, name: displayName, score: 0 },
             { onConflict: 'game_code,user_id' }
           );
         }
@@ -572,7 +572,7 @@
           const user = authData?.user;
           if (!user) { setLobbyStatus('error', 'Connectez-vous.'); return; }
           // Create game
-          const { error } = await supabase.from(TABLE_GAMES).insert({ code, host_user_id: user.id, status: 'waiting' });
+          const { error } = await supabase.from(TABLE_GAMES).insert({ code, host_user_id: user.id, status: 'waiting', total_rounds: TOTAL_ROUNDS_DEFAULT, current_round: 0, active_letter: null, active_category: null });
           if (error) { setLobbyStatus('error', error.message); return; }
           // Join as player and enter room
           await ensureJoinedPlayer(code);
@@ -607,21 +607,18 @@
         async function subscribeRoom(code) {
           unsubscribeRoom();
           roomChannel = supabase.channel('room-' + code)
-            .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_GAMES, filter: `code=eq.${code}` }, (payload) => {
+            .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_GAMES, filter: `code=eq.${code}` }, async (payload) => {
               const newRow = payload.new || payload.record;
               if (!newRow) return;
-              if (newRow.status === 'started') {
-                setRoomStatus('ok', 'La partie démarre !');
-                // Basculer vers l’écran de setup/jeu local
-                lobby.classList.add('hidden');
-                room.classList.add('hidden');
-                setupArea.classList.remove('hidden');
-                playArea.classList.add('hidden');
-                // reset local state
-                players.splice(0, players.length);
-                renderPlayers();
-                renderScoreboard();
+              if (newRow.status === 'started' || newRow.status === 'playing' || newRow.status === 'finished') {
+                onGameStateUpdate(newRow);
               }
+            })
+            .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_PLAYERS, filter: `game_code=eq.${code}` }, async () => {
+              const { data } = await supabase.from(TABLE_PLAYERS).select('*').eq('game_code', code);
+              playersInRoom = (data || []).map(r => ({ user_id: r.user_id, name: r.name, score: r.score || 0 }));
+              renderBuzzers();
+              renderScoreboard();
             })
             .subscribe();
         }
@@ -643,13 +640,25 @@
           setRoomStatus('ok', isHost ? 'Vous êtes l’hôte.' : 'Vous avez rejoint la partie.');
           launchGameBtn.classList.toggle('hidden', !isHost);
           subscribeRoom(code);
+          // Charger l'état initial
+          const { data: gameRow } = await supabase.from(TABLE_GAMES).select('*').eq('code', code).single();
+          onGameStateUpdate(gameRow);
+          const { data: plist } = await supabase.from(TABLE_PLAYERS).select('*').eq('game_code', code);
+          playersInRoom = (plist || []).map(r => ({ user_id: r.user_id, name: r.name, score: r.score || 0 }));
+          renderBuzzers();
+          renderScoreboard();
         }
 
         createGameBtn.addEventListener('click', async (e) => { e.preventDefault(); await createGame(); });
         launchGameBtn.addEventListener('click', async (e) => {
           e.preventDefault();
           if (!isHost || !currentRoomCode) return;
-          const { error } = await supabase.from(TABLE_GAMES).update({ status: 'started' }).eq('code', currentRoomCode);
+          // passer directement à la première manche synchronisée
+          const letter = randomFrom(alphabet);
+          const category = randomFrom(categories);
+          const { error } = await supabase.from(TABLE_GAMES)
+            .update({ status: 'playing', current_round: 1, total_rounds: TOTAL_ROUNDS_DEFAULT, active_letter: letter, active_category: category })
+            .eq('code', currentRoomCode);
           if (error) setRoomStatus('error', error.message);
         });
         leaveGameBtn.addEventListener('click', async (e) => {
@@ -685,13 +694,17 @@
         ];
         const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-        const players = [];
-        let roundsToPlay = 10;
+        const TOTAL_ROUNDS_DEFAULT = 20;
+
+        // Etat local (multi)
+        const players = []; // conservé mais inutilisé pour config locale
+        let playersInRoom = [];
+        let totalRounds = TOTAL_ROUNDS_DEFAULT;
         let currentRound = 0;
         let activeLetter = "A";
         let activeCategory = categories[0];
-        let selectedCategories = new Set(categories);
-        let lockedResponderIndex = null;
+        let selectedCategories = new Set(categories); // non utilisé en mode en ligne
+        let lockedResponderUserId = null;
 
         // Setup UI refs
         const playerNameInput = document.getElementById("player-name-input");
@@ -753,19 +766,21 @@
         }
 
         function renderBuzzers() {
-          buzzers.innerHTML = players.map((p, idx) => `
-            <button class="buzzer-btn" data-i="${idx}">BIP ${p.name}</button>
+          buzzers.innerHTML = playersInRoom.map((p) => `
+            <button class="buzzer-btn" data-user="${p.user_id}" ${!isHost ? 'disabled' : ''}>BIP ${p.name}</button>
           `).join("");
-          buzzers.querySelectorAll('button').forEach(btn => {
-            btn.addEventListener('click', () => lockResponder(Number(btn.getAttribute('data-i'))));
-          });
+          if (isHost) {
+            buzzers.querySelectorAll('button').forEach(btn => {
+              btn.addEventListener('click', () => lockResponder(btn.getAttribute('data-user')));
+            });
+          }
         }
 
         function renderScoreboard() {
-          scoreboard.innerHTML = players.map((p, idx) => `
+          scoreboard.innerHTML = playersInRoom.map((p) => `
             <div class="score-item">
               <span>${p.name}</span>
-              <strong>${p.score}</strong>
+              <strong>${p.score ?? 0}</strong>
             </div>
           `).join("");
         }
@@ -774,55 +789,65 @@
 
         function drawLetterAndCategory() {
           activeLetter = randomFrom(alphabet);
-          const cats = Array.from(selectedCategories);
-          activeCategory = cats.length ? randomFrom(cats) : randomFrom(categories);
+          activeCategory = randomFrom(categories);
           bigLetter.textContent = activeLetter;
           currentCategoryEl.textContent = activeCategory;
           roundStatus.textContent = "";
           responseArea.classList.add('hidden');
-          lockedResponderIndex = null;
+          lockedResponderUserId = null;
           // enable all buzzers
           buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
         }
 
-        function lockResponder(i) {
-          if (lockedResponderIndex !== null) return; // already locked
-          lockedResponderIndex = i;
+        function lockResponder(userId) {
+          if (!isHost) return;
+          if (lockedResponderUserId !== null) return; // already locked
+          lockedResponderUserId = userId;
           // disable all buzzers
-          buzzers.querySelectorAll('button').forEach((b, j) => b.disabled = j !== i);
-          responderName.textContent = players[i].name;
+          buzzers.querySelectorAll('button').forEach((b) => b.disabled = b.getAttribute('data-user') !== userId);
+          const responder = playersInRoom.find(p => p.user_id === userId);
+          responderName.textContent = responder?.name || 'Joueur';
           responseArea.classList.remove('hidden');
           proposedWord.value = "";
           proposedWord.focus();
         }
 
-        function nextRound() {
-          currentRound += 1;
-          roundCounter.textContent = `Manche ${currentRound} / ${roundsToPlay}`;
-          if (currentRound > roundsToPlay) {
-            finishGame();
+        async function hostNextRound() {
+          if (!isHost || !currentRoomCode) return;
+          const { data: g } = await supabase.from(TABLE_GAMES).select('current_round,total_rounds').eq('code', currentRoomCode).single();
+          const next = (g?.current_round ?? 0) + 1;
+          const total = g?.total_rounds ?? TOTAL_ROUNDS_DEFAULT;
+          if (next > total) {
+            await supabase.from(TABLE_GAMES).update({ status: 'finished' }).eq('code', currentRoomCode);
             return;
           }
-          drawLetterAndCategory();
+          const letter = randomFrom(alphabet);
+          const category = randomFrom(categories);
+          await supabase.from(TABLE_GAMES).update({ status: 'playing', current_round: next, total_rounds: total, active_letter: letter, active_category: category }).eq('code', currentRoomCode);
           nextRoundBtn.classList.add('hidden');
         }
 
-        function startGame() {
-          currentRound = 0;
-          players.forEach(p => p.score = 0);
-          renderScoreboard();
-          setupArea.classList.add('hidden');
-          playArea.classList.remove('hidden');
-          nextRound();
-        }
-
-        function finishGame() {
-          // Determine winner(s)
-          const maxScore = Math.max(...players.map(p => p.score), 0);
-          const winners = players.filter(p => p.score === maxScore).map(p => p.name);
-          setStatus(gameStatus, 'ok', `Partie terminée. Gagnant(s): ${winners.join(', ')} (${maxScore} points)`);
-          setupArea.classList.remove('hidden');
-          playArea.classList.add('hidden');
+        function onGameStateUpdate(row) {
+          if (!row) return;
+          totalRounds = row.total_rounds ?? TOTAL_ROUNDS_DEFAULT;
+          currentRound = row.current_round ?? 0;
+          activeLetter = row.active_letter ?? activeLetter;
+          activeCategory = row.active_category ?? activeCategory;
+          roundCounter.textContent = `Manche ${currentRound} / ${totalRounds}`;
+          bigLetter.textContent = activeLetter;
+          currentCategoryEl.textContent = activeCategory;
+          // Show play area when playing
+          if (row.status === 'playing') {
+            lobby.classList.add('hidden');
+            room.classList.add('hidden');
+            setupArea.classList.add('hidden');
+            playArea.classList.remove('hidden');
+          }
+          if (row.status === 'finished') {
+            setStatus(gameStatus, 'ok', 'Partie terminée');
+            playArea.classList.add('hidden');
+            lobby.classList.remove('hidden');
+          }
         }
 
         // Actions setup
@@ -843,27 +868,29 @@
         selectAllCatsBtn.addEventListener('click', (e) => { e.preventDefault(); selectedCategories = new Set(categories); renderCategories(); });
         clearCatsBtn.addEventListener('click', (e) => { e.preventDefault(); selectedCategories = new Set(); renderCategories(); });
 
-        startGameBtn.addEventListener('click', async (e) => {
+        // Setup local start button is unused in online mode
+        startGameBtn.addEventListener('click', (e) => { e.preventDefault(); });
+        endGameBtn.addEventListener('click', async (e) => {
           e.preventDefault();
-          clearStatuses();
-          const { data } = await supabase.auth.getUser();
-          if (!data?.user) { setStatus(gameStatus, 'error', 'Connectez-vous pour jouer.'); setActiveTab('login'); return; }
-          if (players.length < 1) { setStatus(gameStatus, 'error', 'Ajoutez au moins un joueur.'); return; }
-          startGame();
+          if (!isHost || !currentRoomCode) return;
+          await supabase.from(TABLE_GAMES).update({ status: 'finished' }).eq('code', currentRoomCode);
         });
-        endGameBtn.addEventListener('click', (e) => { e.preventDefault(); finishGame(); });
 
-        validateWordBtn.addEventListener('click', (e) => {
+        validateWordBtn.addEventListener('click', async (e) => {
           e.preventDefault();
-          if (lockedResponderIndex === null) return;
+          if (!isHost) return;
+          if (lockedResponderUserId === null) return;
           const word = (proposedWord.value || "").trim();
           if (!word) { setStatus(roundStatus, 'error', 'Entrez un mot.'); return; }
           const startsWith = word[0]?.toUpperCase() === activeLetter;
           if (!startsWith) { setStatus(roundStatus, 'error', `Le mot doit commencer par ${activeLetter}.`); return; }
-          // Attribution du point
-          players[lockedResponderIndex].score += 1;
-          renderScoreboard();
-          setStatus(roundStatus, 'ok', `+1 point pour ${players[lockedResponderIndex].name}`);
+          // Attribution du point (DB)
+          const p = playersInRoom.find(p => p.user_id === lockedResponderUserId);
+          if (p) {
+            const newScore = (p.score || 0) + 1;
+            await supabase.from(TABLE_PLAYERS).update({ score: newScore }).eq('game_code', currentRoomCode).eq('user_id', p.user_id);
+            setStatus(roundStatus, 'ok', `+1 point pour ${p.name}`);
+          }
           nextRoundBtn.classList.remove('hidden');
           // disable buzzers until next round
           buzzers.querySelectorAll('button').forEach(b => b.disabled = true);
@@ -871,15 +898,16 @@
 
         rejectWordBtn.addEventListener('click', (e) => {
           e.preventDefault();
-          if (lockedResponderIndex === null) return;
+          if (!isHost) return;
+          if (lockedResponderUserId === null) return;
           setStatus(roundStatus, 'warn', 'Réponse refusée.');
           // unlock all buzzers again for this round
-          lockedResponderIndex = null;
+          lockedResponderUserId = null;
           responseArea.classList.add('hidden');
           buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
         });
 
-        nextRoundBtn.addEventListener('click', (e) => { e.preventDefault(); nextRound(); });
+        nextRoundBtn.addEventListener('click', async (e) => { e.preventDefault(); await hostNextRound(); });
 
         // Initial render for setup
         renderPlayers();

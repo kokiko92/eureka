@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Eureka</title>
+    <meta name="color-scheme" content="light dark" />
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --primary: #22c55e;
+        --primary-600: #16a34a;
+        --danger: #ef4444;
+        --warning: #f59e0b;
+        --link: #60a5fa;
+        --border: #1f2937;
+      }
+      html, body { height: 100%; }
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+          Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+        background: linear-gradient(180deg, #0b1020, #0f172a 30%);
+        color: var(--text);
+      }
+      .container {
+        max-width: 920px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 0 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      .logo {
+        width: 36px; height: 36px;
+        border-radius: 8px;
+        background: radial-gradient(100% 100% at 0% 0%, #22c55e 0%, #1d4ed8 100%);
+        box-shadow: 0 6px 24px rgba(34, 197, 94, 0.25);
+      }
+      h1 { font-size: 22px; margin: 0; letter-spacing: 0.4px; }
+      .userbox { font-size: 14px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+      .btn {
+        background: var(--primary);
+        color: #061313;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 10px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 0.06s ease, background 0.2s ease;
+      }
+      .btn:hover { background: var(--primary-600); }
+      .btn:active { transform: translateY(1px); }
+      .btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+      .btn.link { background: transparent; color: var(--link); padding: 0; border: none; }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 16px;
+        margin-top: 20px;
+      }
+      .panel {
+        grid-column: 1 / -1;
+        background: rgba(17, 24, 39, 0.7);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px;
+        backdrop-filter: blur(6px);
+      }
+      @media (min-width: 860px) {
+        .panel.auth { grid-column: span 5; }
+        .panel.game { grid-column: span 7; }
+      }
+
+      .tabs { display: flex; gap: 10px; margin-bottom: 14px; }
+      .tab { background: transparent; border: 1px solid var(--border); color: var(--text); padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+      .tab.active { border-color: var(--link); color: var(--link); }
+
+      form { display: grid; gap: 10px; }
+      label { font-size: 13px; color: var(--muted); }
+      input {
+        background: #0b1220;
+        border: 1px solid var(--border);
+        color: var(--text);
+        padding: 10px 12px;
+        border-radius: 10px;
+        outline: none;
+      }
+      .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+      .hint { color: var(--muted); font-size: 13px; }
+      .status { font-size: 14px; margin-top: 8px; }
+      .status.error { color: var(--danger); }
+      .status.warn { color: var(--warning); }
+      .status.ok { color: var(--primary); }
+
+      .game-card {
+        background: #0b1220;
+        border: 1px dashed var(--border);
+        border-radius: 12px;
+        padding: 16px;
+      }
+      .muted { color: var(--muted); }
+      .hidden { display: none !important; }
+    </style>
+    <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="brand">
+          <div class="logo" aria-hidden="true"></div>
+          <h1>Eureka</h1>
+        </div>
+        <div class="userbox" id="userbox">
+          <span id="user-email" class="muted">Non connecté</span>
+          <button class="btn secondary hidden" id="logout-btn">Se déconnecter</button>
+        </div>
+      </header>
+
+      <div class="grid">
+        <section class="panel auth" id="auth-panel">
+          <div class="tabs">
+            <button class="tab active" id="tab-login">Connexion</button>
+            <button class="tab" id="tab-register">Inscription</button>
+          </div>
+
+          <form id="login-form" autocomplete="on">
+            <div>
+              <label for="login-email">Email</label>
+              <input id="login-email" name="email" type="email" placeholder="vous@exemple.com" required />
+            </div>
+            <div>
+              <label for="login-password">Mot de passe</label>
+              <input id="login-password" name="password" type="password" placeholder="••••••••" minlength="6" required />
+            </div>
+            <div class="row">
+              <button type="submit" class="btn">Se connecter</button>
+              <button type="button" id="forgot-btn" class="btn link">Mot de passe oublié ?</button>
+            </div>
+            <div id="login-status" class="status"></div>
+          </form>
+
+          <form id="register-form" class="hidden" autocomplete="on">
+            <div>
+              <label for="register-email">Email</label>
+              <input id="register-email" name="email" type="email" placeholder="vous@exemple.com" required />
+            </div>
+            <div>
+              <label for="register-password">Mot de passe (min. 6 caractères)</label>
+              <input id="register-password" name="password" type="password" placeholder="••••••••" minlength="6" required />
+            </div>
+            <div class="row">
+              <button type="submit" class="btn">Créer mon compte</button>
+            </div>
+            <div class="hint">Selon la configuration, une validation par email peut être requise.</div>
+            <div id="register-status" class="status"></div>
+          </form>
+
+          <form id="forgot-form" class="hidden" autocomplete="on">
+            <div>
+              <label for="forgot-email">Email</label>
+              <input id="forgot-email" type="email" placeholder="vous@exemple.com" required />
+            </div>
+            <div class="row">
+              <button type="submit" class="btn">Envoyer le lien de réinitialisation</button>
+              <button type="button" id="back-to-login" class="btn secondary">Retour</button>
+            </div>
+            <div id="forgot-status" class="status"></div>
+          </form>
+
+          <form id="reset-form" class="hidden" autocomplete="off">
+            <div class="hint">Entrez un nouveau mot de passe pour finaliser la réinitialisation.</div>
+            <div>
+              <label for="reset-password">Nouveau mot de passe</label>
+              <input id="reset-password" type="password" placeholder="••••••••" minlength="6" required />
+            </div>
+            <div class="row">
+              <button type="submit" class="btn">Mettre à jour le mot de passe</button>
+              <button type="button" id="cancel-reset" class="btn secondary">Annuler</button>
+            </div>
+            <div id="reset-status" class="status"></div>
+          </form>
+        </section>
+
+        <section class="panel game hidden" id="game-panel">
+          <h2>Zone de jeu</h2>
+          <div class="game-card">
+            <p>Bienvenue sur Eureka ! Cette zone est protégée et accessible uniquement aux utilisateurs connectés.</p>
+            <p class="muted">Prototype: remplacez ce contenu par votre jeu en ligne.</p>
+            <button class="btn" id="start-game">Démarrer une partie</button>
+            <div id="game-status" class="status"></div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      window.addEventListener('DOMContentLoaded', () => {
+        // Initialisation Supabase (vos identifiants publics)
+        const SUPABASE_URL = "https://gcqkvteqjqwlbzjwmhsu.supabase.co";
+        const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdjcWt2dGVxanF3bGJ6andtaHN1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ5MTgzODQsImV4cCI6MjA3MDQ5NDM4NH0.b7E9pAH4OW3xcxwQV-nf-kTKOjLlTf3ZPocjbB3kOoE";
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // Elements UI
+        const userEmailEl = document.getElementById("user-email");
+        const logoutBtn = document.getElementById("logout-btn");
+        const authPanel = document.getElementById("auth-panel");
+        const gamePanel = document.getElementById("game-panel");
+
+        // Tabs & forms
+        const tabLogin = document.getElementById("tab-login");
+        const tabRegister = document.getElementById("tab-register");
+        const loginForm = document.getElementById("login-form");
+        const registerForm = document.getElementById("register-form");
+        const forgotForm = document.getElementById("forgot-form");
+        const resetForm = document.getElementById("reset-form");
+
+        // Status areas
+        const loginStatus = document.getElementById("login-status");
+        const registerStatus = document.getElementById("register-status");
+        const forgotStatus = document.getElementById("forgot-status");
+        const resetStatus = document.getElementById("reset-status");
+        const gameStatus = document.getElementById("game-status");
+
+        const forgotBtn = document.getElementById("forgot-btn");
+        const backToLoginBtn = document.getElementById("back-to-login");
+        const cancelResetBtn = document.getElementById("cancel-reset");
+
+        const loginEmail = document.getElementById("login-email");
+        const loginPassword = document.getElementById("login-password");
+        const registerEmail = document.getElementById("register-email");
+        const registerPassword = document.getElementById("register-password");
+        const forgotEmail = document.getElementById("forgot-email");
+        const resetPassword = document.getElementById("reset-password");
+
+        function setActiveTab(tab) {
+          const isLogin = tab === "login";
+          tabLogin.classList.toggle("active", isLogin);
+          tabRegister.classList.toggle("active", !isLogin);
+          loginForm.classList.toggle("hidden", !isLogin);
+          registerForm.classList.toggle("hidden", isLogin);
+          forgotForm.classList.add("hidden");
+          resetForm.classList.add("hidden");
+          clearStatuses();
+        }
+
+        function showForgot() {
+          loginForm.classList.add("hidden");
+          registerForm.classList.add("hidden");
+          resetForm.classList.add("hidden");
+          forgotForm.classList.remove("hidden");
+          tabLogin.classList.remove("active");
+          tabRegister.classList.remove("active");
+          clearStatuses();
+        }
+
+        function showReset() {
+          loginForm.classList.add("hidden");
+          registerForm.classList.add("hidden");
+          forgotForm.classList.add("hidden");
+          resetForm.classList.remove("hidden");
+          tabLogin.classList.remove("active");
+          tabRegister.classList.remove("active");
+          clearStatuses();
+        }
+
+        function clearStatuses() {
+          for (const el of [loginStatus, registerStatus, forgotStatus, resetStatus, gameStatus]) {
+            el.textContent = "";
+            el.className = "status";
+          }
+        }
+
+        function setStatus(el, type, msg) {
+          el.textContent = msg;
+          el.className = `status ${type}`;
+        }
+
+        function setSignedInUI(user) {
+          userEmailEl.textContent = user?.email ?? "Non connecté";
+          logoutBtn.classList.toggle("hidden", !user);
+          gamePanel.classList.toggle("hidden", !user);
+          authPanel.classList.toggle("hidden", !!user);
+        }
+
+        tabLogin.addEventListener("click", () => setActiveTab("login"));
+        tabRegister.addEventListener("click", () => setActiveTab("register"));
+        forgotBtn.addEventListener("click", showForgot);
+        backToLoginBtn.addEventListener("click", () => setActiveTab("login"));
+        cancelResetBtn.addEventListener("click", () => setActiveTab("login"));
+
+        logoutBtn.addEventListener("click", async () => {
+          clearStatuses();
+          const { error } = await supabase.auth.signOut();
+          if (error) setStatus(loginStatus, "error", error.message);
+        });
+
+        loginForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          clearStatuses();
+          setStatus(loginStatus, "warn", "Connexion en cours...");
+          const email = loginEmail.value.trim();
+          const password = loginPassword.value;
+          const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+          if (error) {
+            setStatus(loginStatus, "error", error.message);
+            return;
+          }
+          if (data?.session) setStatus(loginStatus, "ok", "Connecté !");
+        });
+
+        registerForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          clearStatuses();
+          setStatus(registerStatus, "warn", "Création du compte...");
+          const email = registerEmail.value.trim();
+          const password = registerPassword.value;
+          const { data, error } = await supabase.auth.signUp({ email, password });
+          if (error) {
+            setStatus(registerStatus, "error", error.message);
+            return;
+          }
+          if (data?.user) {
+            const needsConfirmation = !data.session;
+            if (needsConfirmation) {
+              setStatus(registerStatus, "ok", "Compte créé. Vérifiez votre email pour confirmer votre adresse.");
+            } else {
+              setStatus(registerStatus, "ok", "Compte créé et connecté !");
+            }
+            setActiveTab("login");
+          }
+        });
+
+        forgotForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          clearStatuses();
+          const email = forgotEmail.value.trim();
+          if (!email) {
+            setStatus(forgotStatus, "error", "Veuillez saisir votre email.");
+            return;
+          }
+          setStatus(forgotStatus, "warn", "Envoi du lien...");
+          const redirectTo = `${location.origin}${location.pathname}`;
+          const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo });
+          if (error) {
+            setStatus(forgotStatus, "error", error.message);
+            return;
+          }
+          setStatus(forgotStatus, "ok", "Lien envoyé. Consultez votre email.");
+        });
+
+        resetForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          clearStatuses();
+          const newPassword = resetPassword.value;
+          if (!newPassword || newPassword.length < 6) {
+            setStatus(resetStatus, "error", "Le mot de passe doit contenir au moins 6 caractères.");
+            return;
+          }
+          setStatus(resetStatus, "warn", "Mise à jour du mot de passe...");
+          const { data, error } = await supabase.auth.updateUser({ password: newPassword });
+          if (error) {
+            setStatus(resetStatus, "error", error.message);
+            return;
+          }
+          resetPassword.value = "";
+          setStatus(resetStatus, "ok", "Mot de passe mis à jour. Vous pouvez vous reconnecter.");
+          setActiveTab("login");
+        });
+
+        document.getElementById("start-game").addEventListener("click", async () => {
+          clearStatuses();
+          const { data } = await supabase.auth.getUser();
+          if (!data?.user) {
+            setStatus(gameStatus, "error", "Connectez-vous pour jouer.");
+            setActiveTab("login");
+            return;
+          }
+          setStatus(gameStatus, "ok", `Bonne partie, ${data.user.email} !`);
+        });
+
+        function handleHashForRecovery() {
+          const hash = window.location.hash || "";
+          const params = new URLSearchParams(hash.startsWith("#") ? hash.slice(1) : hash);
+          const type = params.get("type");
+          if (type === "recovery") {
+            showReset();
+          }
+        }
+
+        async function initAuthUI() {
+          const { data: sessionData } = await supabase.auth.getSession();
+          setSignedInUI(sessionData.session?.user ?? null);
+
+          handleHashForRecovery();
+
+          supabase.auth.onAuthStateChange((event, session) => {
+            if (event === "PASSWORD_RECOVERY") {
+              showReset();
+            }
+            setSignedInUI(session?.user ?? null);
+          });
+        }
+
+        initAuthUI();
+      });
+    </script>
+  </body>
+</html>
+

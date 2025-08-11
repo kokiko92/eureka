@@ -296,10 +296,14 @@
                 <div class="hint">Au tour de <strong id="responder-name"></strong></div>
                 <div class="row">
                   <input id="proposed-word" placeholder="Votre mot..." />
-                  <button class="btn" id="validate-word">Valider</button>
-                  <button class="btn secondary" id="reject-word">Refuser</button>
+                  <button class="btn" id="validate-word">Proposer</button>
+                  <button class="btn secondary" id="reject-word">Annuler</button>
                 </div>
                 <div id="round-status" class="status"></div>
+                <div id="vote-area" class="row hidden">
+                  <button class="btn" id="vote-accept">Valider</button>
+                  <button class="btn secondary" id="vote-reject">Refuser</button>
+                </div>
               </div>
 
               <div class="scoreboard" id="scoreboard"></div>
@@ -495,6 +499,10 @@
         let isHost = false;
         let gamesChannel = null;
         let roomChannel = null;
+        let currentUser = null;
+        let currentUserName = '';
+        let lastGameRow = null;
+        let countdownInterval = null;
 
         const lobby = document.getElementById('lobby');
         const gameCodeInput = document.getElementById('game-code-input');
@@ -614,6 +622,9 @@
                 onGameStateUpdate(newRow);
               }
             })
+            .on('broadcast', { event: 'buzz' }, (payload) => {
+              // fallback broadcast if needed
+            })
             .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_PLAYERS, filter: `game_code=eq.${code}` }, async () => {
               const { data } = await supabase.from(TABLE_PLAYERS).select('*').eq('game_code', code);
               playersInRoom = (data || []).map(r => ({ user_id: r.user_id, name: r.name, score: r.score || 0 }));
@@ -731,6 +742,9 @@
         const nextRoundBtn = document.getElementById("next-round");
         const startGameBtn = document.getElementById("start-game");
         const endGameBtn = document.getElementById("end-game");
+        const voteArea = document.getElementById('vote-area');
+        const voteAcceptBtn = document.getElementById('vote-accept');
+        const voteRejectBtn = document.getElementById('vote-reject');
 
         function renderPlayers() {
           playersList.innerHTML = players.map((p, idx) => `
@@ -767,13 +781,14 @@
 
         function renderBuzzers() {
           buzzers.innerHTML = playersInRoom.map((p) => `
-            <button class="buzzer-btn" data-user="${p.user_id}" ${!isHost ? 'disabled' : ''}>BIP ${p.name}</button>
+            <button class="buzzer-btn" data-user="${p.user_id}">BIP ${p.name}</button>
           `).join("");
-          if (isHost) {
-            buzzers.querySelectorAll('button').forEach(btn => {
-              btn.addEventListener('click', () => lockResponder(btn.getAttribute('data-user')));
+          buzzers.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const uid = btn.getAttribute('data-user');
+              await tryBuzz(uid);
             });
-          }
+          });
         }
 
         function renderScoreboard() {
@@ -799,8 +814,38 @@
           buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
         }
 
+        function stopCountdown() {
+          if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+          const existing = document.getElementById('countdown');
+          if (existing) existing.remove();
+        }
+
+        function startCountdown(lockedAtIso, seconds) {
+          stopCountdown();
+          const counter = document.createElement('div');
+          counter.id = 'countdown';
+          counter.className = 'chip';
+          responseArea.appendChild(counter);
+          function tick() {
+            const now = Date.now();
+            const start = lockedAtIso ? new Date(lockedAtIso).getTime() : now;
+            const elapsed = Math.floor((now - start) / 1000);
+            const remain = Math.max(0, seconds - elapsed);
+            counter.textContent = `Temps restant: ${remain}s`;
+            if (remain <= 0) {
+              stopCountdown();
+              releaseLock();
+            }
+          }
+          tick();
+          countdownInterval = setInterval(tick, 250);
+        }
+
+        function showVoteUI(show) {
+          voteArea.classList.toggle('hidden', !show);
+        }
+
         function lockResponder(userId) {
-          if (!isHost) return;
           if (lockedResponderUserId !== null) return; // already locked
           lockedResponderUserId = userId;
           // disable all buzzers
@@ -823,12 +868,13 @@
           }
           const letter = randomFrom(alphabet);
           const category = randomFrom(categories);
-          await supabase.from(TABLE_GAMES).update({ status: 'playing', current_round: next, total_rounds: total, active_letter: letter, active_category: category }).eq('code', currentRoomCode);
+          await supabase.from(TABLE_GAMES).update({ status: 'playing', current_round: next, total_rounds: total, active_letter: letter, active_category: category, locked_user_id: null, locked_at: null, proposed_word: null }).eq('code', currentRoomCode);
           nextRoundBtn.classList.add('hidden');
         }
 
         function onGameStateUpdate(row) {
           if (!row) return;
+          lastGameRow = row;
           totalRounds = row.total_rounds ?? TOTAL_ROUNDS_DEFAULT;
           currentRound = row.current_round ?? 0;
           activeLetter = row.active_letter ?? activeLetter;
@@ -836,6 +882,26 @@
           roundCounter.textContent = `Manche ${currentRound} / ${totalRounds}`;
           bigLetter.textContent = activeLetter;
           currentCategoryEl.textContent = activeCategory;
+          // Buzz/lock state
+          lockedResponderUserId = row.locked_user_id ?? null;
+          const locked = lockedResponderUserId !== null && lockedResponderUserId !== undefined;
+          buzzers.querySelectorAll('button').forEach((b) => {
+            const uid = b.getAttribute('data-user');
+            b.disabled = locked ? (uid !== String(lockedResponderUserId)) : false;
+          });
+          if (locked) {
+            const responder = playersInRoom.find(p => String(p.user_id) === String(lockedResponderUserId));
+            responderName.textContent = responder?.name || 'Joueur';
+            responseArea.classList.remove('hidden');
+            startCountdown(row.locked_at, 15);
+          } else {
+            responseArea.classList.add('hidden');
+            stopCountdown();
+          }
+          // Proposed word
+          proposedWord.value = row.proposed_word || '';
+          // Si un mot est proposé, afficher boutons de vote pour tous
+          showVoteUI(!!row.proposed_word);
           // Show play area when playing
           if (row.status === 'playing') {
             lobby.classList.add('hidden');
@@ -878,34 +944,37 @@
 
         validateWordBtn.addEventListener('click', async (e) => {
           e.preventDefault();
-          if (!isHost) return;
           if (lockedResponderUserId === null) return;
           const word = (proposedWord.value || "").trim();
           if (!word) { setStatus(roundStatus, 'error', 'Entrez un mot.'); return; }
           const startsWith = word[0]?.toUpperCase() === activeLetter;
           if (!startsWith) { setStatus(roundStatus, 'error', `Le mot doit commencer par ${activeLetter}.`); return; }
-          // Attribution du point (DB)
-          const p = playersInRoom.find(p => p.user_id === lockedResponderUserId);
-          if (p) {
-            const newScore = (p.score || 0) + 1;
-            await supabase.from(TABLE_PLAYERS).update({ score: newScore }).eq('game_code', currentRoomCode).eq('user_id', p.user_id);
-            setStatus(roundStatus, 'ok', `+1 point pour ${p.name}`);
-          }
-          nextRoundBtn.classList.remove('hidden');
-          // disable buzzers until next round
-          buzzers.querySelectorAll('button').forEach(b => b.disabled = true);
+          // Envoi de la proposition pour vote des autres
+          await supabase.from(TABLE_GAMES).update({ proposed_word: word, vote_accepts: 0, vote_rejects: 0 }).eq('code', currentRoomCode);
+          setStatus(roundStatus, 'warn', 'Vote en cours…');
+          // Les buzzers restent bloqués pendant le vote
         });
 
         rejectWordBtn.addEventListener('click', (e) => {
           e.preventDefault();
-          if (!isHost) return;
+          // Annule la saisie locale (avant envoi)
           if (lockedResponderUserId === null) return;
-          setStatus(roundStatus, 'warn', 'Réponse refusée.');
-          // unlock all buzzers again for this round
-          lockedResponderUserId = null;
-          responseArea.classList.add('hidden');
-          buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
+          proposedWord.value = '';
+          setStatus(roundStatus, 'warn', 'Saisie annulée.');
         });
+
+        async function vote(accept) {
+          if (!currentRoomCode) return;
+          if (!currentUser) return;
+          // Pour éviter double vote client: app côté serveur devrait garder trace, ici simplifié
+          if (accept) {
+            await supabase.rpc('eureka_vote_accept', { p_code: currentRoomCode });
+          } else {
+            await supabase.rpc('eureka_vote_reject', { p_code: currentRoomCode });
+          }
+        }
+        voteAcceptBtn.addEventListener('click', async (e) => { e.preventDefault(); await vote(true); });
+        voteRejectBtn.addEventListener('click', async (e) => { e.preventDefault(); await vote(false); });
 
         nextRoundBtn.addEventListener('click', async (e) => { e.preventDefault(); await hostNextRound(); });
 
@@ -934,6 +1003,8 @@
             }
             setSignedInUI(session?.user ?? null);
             if (session?.user) {
+              currentUser = session.user;
+              currentUserName = (currentUser.user_metadata?.name || currentUser.email || 'Joueur').split('@')[0];
               // Une fois connecté, l'utilisateur n'a qu'un choix: créer/rejoindre une partie
               showLobbyUI();
               initLobby();

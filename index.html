@@ -793,6 +793,7 @@
 
         function renderBuzzers() {
           const me = playersInRoom.find(p => String(p.user_id) === String((currentUser||{}).id));
+          console.log("DEBUG: renderBuzzers -> me =", me);
           if (!me) {
             buzzers.innerHTML = '<div class="muted">En attente de votre inscription à la partie…</div>';
             return;
@@ -855,6 +856,7 @@
         async function tryBuzz(userId) {
           if (!currentRoomCode) return;
           try {
+            console.log("DEBUG: tryBuzz called by", userId);
             await supabase.rpc('eureka_try_buzz', { p_code: currentRoomCode, p_user: userId });
           } catch (_) {}
         }
@@ -900,6 +902,11 @@
         function onGameStateUpdate(row) {
           if (!row) return;
           lastGameRow = row;
+          /* */
+          console.log("DEBUG: currentUser.id =", currentUser?.id);
+          console.log("DEBUG: locked_user_id =", row.locked_user_id);
+          console.log("DEBUG: playersInRoom =", playersInRoom);
+          /* */
           totalRounds = row.total_rounds ?? TOTAL_ROUNDS_DEFAULT;
           currentRound = row.current_round ?? 0;
           activeLetter = row.active_letter ?? activeLetter;
@@ -1069,4 +1076,5 @@
     </script>
   </body>
 </html>
+
 

@@ -219,6 +219,32 @@
         <section class="panel game hidden" id="game-panel">
           <h2>Zone de jeu</h2>
           <div class="game-card">
+            <div id="lobby">
+              <h3>Créer une partie</h3>
+              <div class="row">
+                <input id="game-code-input" type="text" inputmode="numeric" pattern="[0-9]*" placeholder="Numéro de partie (ex: 1234)" />
+                <button class="btn" id="create-game">Créer</button>
+              </div>
+              <div id="lobby-status" class="status"></div>
+              <h3 style="margin-top:16px">Parties en attente</h3>
+              <div id="games-list" class="list"></div>
+            </div>
+
+            <div id="room" class="hidden">
+              <div class="row">
+                <div>
+                  <div class="muted">Code de la partie</div>
+                  <div id="room-code" class="big-letter" style="font-size:32px"></div>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                  <button class="btn" id="launch-game">Lancer la partie</button>
+                  <button class="btn secondary" id="leave-game">Quitter</button>
+                </div>
+              </div>
+              <div id="room-status" class="status"></div>
+              <div class="hint">En attente du lancement par l'hôte…</div>
+            </div>
+
             <div id="setup" class="setup">
               <div class="grid-2">
                 <div>
@@ -461,6 +487,194 @@
         });
 
         // ----------------------
+        // Lobby en ligne (Supabase)
+        // ----------------------
+        const TABLE_GAMES = 'eureka_games';
+        const TABLE_PLAYERS = 'eureka_game_players';
+        let currentRoomCode = null;
+        let isHost = false;
+        let gamesChannel = null;
+        let roomChannel = null;
+
+        const lobby = document.getElementById('lobby');
+        const gameCodeInput = document.getElementById('game-code-input');
+        const createGameBtn = document.getElementById('create-game');
+        const lobbyStatus = document.getElementById('lobby-status');
+        const gamesList = document.getElementById('games-list');
+
+        const room = document.getElementById('room');
+        const roomCodeEl = document.getElementById('room-code');
+        const launchGameBtn = document.getElementById('launch-game');
+        const leaveGameBtn = document.getElementById('leave-game');
+        const roomStatus = document.getElementById('room-status');
+
+        function showLobbyUI() {
+          // Show lobby, hide room and gameplay until a room is started
+          lobby.classList.remove('hidden');
+          room.classList.add('hidden');
+          setupArea.classList.add('hidden');
+          playArea.classList.add('hidden');
+          nextRoundBtn.classList.add('hidden');
+          currentRoomCode = null;
+          isHost = false;
+          unsubscribeRoom();
+        }
+
+        function setLobbyStatus(type, msg) { setStatus(lobbyStatus, type, msg); }
+        function setRoomStatus(type, msg) { setStatus(roomStatus, type, msg); }
+
+        async function fetchWaitingGames() {
+          const { data, error } = await supabase
+            .from(TABLE_GAMES)
+            .select('code, host_user_id, status, created_at')
+            .eq('status', 'waiting')
+            .order('created_at', { ascending: false });
+          if (error) { setLobbyStatus('error', error.message); return []; }
+          return data || [];
+        }
+
+        function renderGames(games) {
+          if (!games.length) {
+            gamesList.innerHTML = '<div class="muted">Aucune partie en attente.</div>';
+            return;
+          }
+          gamesList.innerHTML = games.map(g => `
+            <div class="row">
+              <span class="chip">Code: ${g.code}</span>
+              <button class="btn secondary join-game" data-code="${g.code}">Rejoindre</button>
+            </div>
+          `).join('');
+          gamesList.querySelectorAll('.join-game').forEach(btn => {
+            btn.addEventListener('click', async () => {
+              const code = btn.getAttribute('data-code');
+              await joinGame(code);
+            });
+          });
+        }
+
+        async function ensureJoinedPlayer(code) {
+          const { data: authData } = await supabase.auth.getUser();
+          const user = authData?.user;
+          if (!user) return;
+          const displayName = (user.email || 'Joueur').split('@')[0];
+          // Try to insert, ignore if exists (policy should prevent duplicates or use unique index)
+          await supabase.from(TABLE_PLAYERS).upsert(
+            { game_code: code, user_id: user.id, name: displayName },
+            { onConflict: 'game_code,user_id' }
+          );
+        }
+
+        async function createGame() {
+          setLobbyStatus('warn', 'Création...');
+          const code = (gameCodeInput.value || '').trim();
+          if (!/^\d{3,6}$/.test(code)) { setLobbyStatus('error', 'Entrez un numéro (3-6 chiffres).'); return; }
+          const { data: authData } = await supabase.auth.getUser();
+          const user = authData?.user;
+          if (!user) { setLobbyStatus('error', 'Connectez-vous.'); return; }
+          // Create game
+          const { error } = await supabase.from(TABLE_GAMES).insert({ code, host_user_id: user.id, status: 'waiting' });
+          if (error) { setLobbyStatus('error', error.message); return; }
+          // Join as player and enter room
+          await ensureJoinedPlayer(code);
+          isHost = true;
+          enterRoom(code);
+        }
+
+        async function joinGame(code) {
+          setLobbyStatus('warn', `Rejoindre ${code}...`);
+          await ensureJoinedPlayer(code);
+          isHost = false;
+          enterRoom(code);
+        }
+
+        function unsubscribeGames() {
+          if (gamesChannel) { supabase.removeChannel(gamesChannel); gamesChannel = null; }
+        }
+        function unsubscribeRoom() {
+          if (roomChannel) { supabase.removeChannel(roomChannel); roomChannel = null; }
+        }
+
+        async function subscribeGamesList() {
+          unsubscribeGames();
+          gamesChannel = supabase.channel('games-list')
+            .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_GAMES }, async (payload) => {
+              const games = await fetchWaitingGames();
+              renderGames(games);
+            })
+            .subscribe();
+        }
+
+        async function subscribeRoom(code) {
+          unsubscribeRoom();
+          roomChannel = supabase.channel('room-' + code)
+            .on('postgres_changes', { event: '*', schema: 'public', table: TABLE_GAMES, filter: `code=eq.${code}` }, (payload) => {
+              const newRow = payload.new || payload.record;
+              if (!newRow) return;
+              if (newRow.status === 'started') {
+                setRoomStatus('ok', 'La partie démarre !');
+                // Basculer vers l’écran de setup/jeu local
+                lobby.classList.add('hidden');
+                room.classList.add('hidden');
+                setupArea.classList.remove('hidden');
+                playArea.classList.add('hidden');
+                // reset local state
+                players.splice(0, players.length);
+                renderPlayers();
+                renderScoreboard();
+              }
+            })
+            .subscribe();
+        }
+
+        async function refreshLobby() {
+          const games = await fetchWaitingGames();
+          renderGames(games);
+        }
+
+        async function enterRoom(code) {
+          currentRoomCode = code;
+          roomCodeEl.textContent = code;
+          lobby.classList.add('hidden');
+          room.classList.remove('hidden');
+          setupArea.classList.add('hidden');
+          playArea.classList.add('hidden');
+          nextRoundBtn.classList.add('hidden');
+          setLobbyStatus('','');
+          setRoomStatus('ok', isHost ? 'Vous êtes l’hôte.' : 'Vous avez rejoint la partie.');
+          launchGameBtn.classList.toggle('hidden', !isHost);
+          subscribeRoom(code);
+        }
+
+        createGameBtn.addEventListener('click', async (e) => { e.preventDefault(); await createGame(); });
+        launchGameBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (!isHost || !currentRoomCode) return;
+          const { error } = await supabase.from(TABLE_GAMES).update({ status: 'started' }).eq('code', currentRoomCode);
+          if (error) setRoomStatus('error', error.message);
+        });
+        leaveGameBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          if (!currentRoomCode) { showLobbyUI(); return; }
+          const { data: authData } = await supabase.auth.getUser();
+          const user = authData?.user;
+          if (user) {
+            // remove player row
+            await supabase.from(TABLE_PLAYERS).delete().eq('game_code', currentRoomCode).eq('user_id', user.id);
+            if (isHost) {
+              // host deletes the game if still waiting
+              await supabase.from(TABLE_GAMES).delete().eq('code', currentRoomCode).eq('status', 'waiting');
+            }
+          }
+          showLobbyUI();
+          await refreshLobby();
+        });
+
+        async function initLobby() {
+          await refreshLobby();
+          await subscribeGamesList();
+        }
+
+        // ----------------------
         // Jeu Eureka (local)
         // ----------------------
         const categories = [
@@ -691,6 +905,14 @@
               showReset();
             }
             setSignedInUI(session?.user ?? null);
+            if (session?.user) {
+              // Une fois connecté, l'utilisateur n'a qu'un choix: créer/rejoindre une partie
+              showLobbyUI();
+              initLobby();
+            } else {
+              // Déconnexion: nettoyer et revenir à l'auth
+              showLobbyUI();
+            }
           });
         }
 

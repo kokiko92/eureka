@@ -115,6 +115,26 @@
       }
       .muted { color: var(--muted); }
       .hidden { display: none !important; }
+      .big-letter {
+        font-size: 64px;
+        font-weight: 800;
+        letter-spacing: 6px;
+        margin: 8px 0;
+        color: #a5b4fc;
+        text-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+      }
+      .letter-category { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+      .category { font-size: 18px; color: var(--muted); }
+      .buzzers { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin: 12px 0; }
+      .buzzer-btn { background: #ef4444; color: white; border: none; padding: 14px 12px; border-radius: 12px; font-weight: 800; cursor: pointer; box-shadow: 0 6px 20px rgba(239, 68, 68, 0.25); }
+      .buzzer-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .scoreboard { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px; }
+      .score-item { background: #0b1220; border: 1px solid var(--border); padding: 10px 12px; border-radius: 10px; display: flex; align-items: center; justify-content: space-between; }
+      .setup { display: grid; gap: 14px; }
+      .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+      .chip { background: #0b1220; border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; font-size: 13px; }
+      .list { max-height: 160px; overflow: auto; border: 1px solid var(--border); border-radius: 10px; padding: 10px; }
     </style>
     <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   </head>
@@ -199,10 +219,68 @@
         <section class="panel game hidden" id="game-panel">
           <h2>Zone de jeu</h2>
           <div class="game-card">
-            <p>Bienvenue sur Eureka ! Cette zone est protégée et accessible uniquement aux utilisateurs connectés.</p>
-            <p class="muted">Prototype: remplacez ce contenu par votre jeu en ligne.</p>
-            <button class="btn" id="start-game">Démarrer une partie</button>
+            <div id="setup" class="setup">
+              <div class="grid-2">
+                <div>
+                  <h3>Joueurs</h3>
+                  <div class="row">
+                    <input id="player-name-input" placeholder="Nom du joueur" />
+                    <button class="btn" id="add-player">Ajouter</button>
+                  </div>
+                  <div id="players-list" class="list"></div>
+                </div>
+                <div>
+                  <h3>Manches</h3>
+                  <div class="row">
+                    <label for="rounds-input">Nombre de manches</label>
+                    <input id="rounds-input" type="number" min="1" max="50" value="10" style="max-width:120px" />
+                  </div>
+                  <div class="hint">Le vainqueur est celui avec le plus de points à la fin.</div>
+                </div>
+              </div>
+              <div>
+                <h3>Catégories</h3>
+                <div class="row">
+                  <button class="btn secondary" id="select-all-cats">Tout sélectionner</button>
+                  <button class="btn secondary" id="clear-cats">Tout désélectionner</button>
+                </div>
+                <div id="categories-list" class="list"></div>
+              </div>
+              <div class="row">
+                <button class="btn" id="start-game">Démarrer la partie</button>
             <div id="game-status" class="status"></div>
+              </div>
+            </div>
+
+            <div id="play" class="hidden">
+              <div class="row">
+                <div id="round-counter" class="hint"></div>
+                <button class="btn secondary" id="end-game" title="Terminer la partie">Terminer</button>
+              </div>
+              <div class="letter-category">
+                <div id="big-letter" class="big-letter">A</div>
+                <div>
+                  <div class="muted">Catégorie</div>
+                  <div id="current-category" class="category"></div>
+                </div>
+              </div>
+              <div id="buzzers" class="buzzers"></div>
+
+              <div id="response-area" class="hidden">
+                <div class="hint">Au tour de <strong id="responder-name"></strong></div>
+                <div class="row">
+                  <input id="proposed-word" placeholder="Votre mot..." />
+                  <button class="btn" id="validate-word">Valider</button>
+                  <button class="btn secondary" id="reject-word">Refuser</button>
+                </div>
+                <div id="round-status" class="status"></div>
+              </div>
+
+              <div class="scoreboard" id="scoreboard"></div>
+              <div class="row">
+                <button class="btn hidden" id="next-round">Manche suivante</button>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -382,16 +460,216 @@
           setActiveTab("login");
         });
 
-        document.getElementById("start-game").addEventListener("click", async () => {
-          clearStatuses();
-          const { data } = await supabase.auth.getUser();
-          if (!data?.user) {
-            setStatus(gameStatus, "error", "Connectez-vous pour jouer.");
-            setActiveTab("login");
+        // ----------------------
+        // Jeu Eureka (local)
+        // ----------------------
+        const categories = [
+          "Prénom masculin", "Prénom féminin", "Ville", "Pays", "Animal",
+          "Fruit ou légume", "Objet", "Métier", "Couleur", "Personnage célèbre (réel ou fictif)",
+          "Titre de film", "Sport", "Instrument de musique", "Petit-déjeuner",
+          "Chose qu’on trouve à l’école", "Marque", "Chanson", "Vêtement ou accessoire", "Lieu touristique"
+        ];
+        const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+
+        const players = [];
+        let roundsToPlay = 10;
+        let currentRound = 0;
+        let activeLetter = "A";
+        let activeCategory = categories[0];
+        let selectedCategories = new Set(categories);
+        let lockedResponderIndex = null;
+
+        // Setup UI refs
+        const playerNameInput = document.getElementById("player-name-input");
+        const addPlayerBtn = document.getElementById("add-player");
+        const playersList = document.getElementById("players-list");
+        const roundsInput = document.getElementById("rounds-input");
+        const categoriesList = document.getElementById("categories-list");
+        const selectAllCatsBtn = document.getElementById("select-all-cats");
+        const clearCatsBtn = document.getElementById("clear-cats");
+
+        const setupArea = document.getElementById("setup");
+        const playArea = document.getElementById("play");
+        const roundCounter = document.getElementById("round-counter");
+        const bigLetter = document.getElementById("big-letter");
+        const currentCategoryEl = document.getElementById("current-category");
+        const buzzers = document.getElementById("buzzers");
+        const responderName = document.getElementById("responder-name");
+        const responseArea = document.getElementById("response-area");
+        const proposedWord = document.getElementById("proposed-word");
+        const validateWordBtn = document.getElementById("validate-word");
+        const rejectWordBtn = document.getElementById("reject-word");
+        const roundStatus = document.getElementById("round-status");
+        const scoreboard = document.getElementById("scoreboard");
+        const nextRoundBtn = document.getElementById("next-round");
+        const startGameBtn = document.getElementById("start-game");
+        const endGameBtn = document.getElementById("end-game");
+
+        function renderPlayers() {
+          playersList.innerHTML = players.map((p, idx) => `
+            <div class="row">
+              <span class="chip">${p.name}</span>
+              <button data-i="${idx}" class="btn secondary remove-player">Retirer</button>
+            </div>
+          `).join("");
+          playersList.querySelectorAll('.remove-player').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+              const i = Number(btn.getAttribute('data-i'));
+              players.splice(i, 1);
+              renderPlayers();
+              renderScoreboard();
+            });
+          });
+        }
+
+        function renderCategories() {
+          categoriesList.innerHTML = categories.map(cat => {
+            const checked = selectedCategories.has(cat) ? 'checked' : '';
+            return `<label style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+              <input type="checkbox" class="cat-cb" value="${cat}" ${checked} />
+              <span>${cat}</span>
+            </label>`;
+          }).join("");
+          categoriesList.querySelectorAll('.cat-cb').forEach(cb => {
+            cb.addEventListener('change', () => {
+              const v = cb.value;
+              if (cb.checked) selectedCategories.add(v); else selectedCategories.delete(v);
+            });
+          });
+        }
+
+        function renderBuzzers() {
+          buzzers.innerHTML = players.map((p, idx) => `
+            <button class="buzzer-btn" data-i="${idx}">BIP ${p.name}</button>
+          `).join("");
+          buzzers.querySelectorAll('button').forEach(btn => {
+            btn.addEventListener('click', () => lockResponder(Number(btn.getAttribute('data-i'))));
+          });
+        }
+
+        function renderScoreboard() {
+          scoreboard.innerHTML = players.map((p, idx) => `
+            <div class="score-item">
+              <span>${p.name}</span>
+              <strong>${p.score}</strong>
+            </div>
+          `).join("");
+        }
+
+        function randomFrom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+        function drawLetterAndCategory() {
+          activeLetter = randomFrom(alphabet);
+          const cats = Array.from(selectedCategories);
+          activeCategory = cats.length ? randomFrom(cats) : randomFrom(categories);
+          bigLetter.textContent = activeLetter;
+          currentCategoryEl.textContent = activeCategory;
+          roundStatus.textContent = "";
+          responseArea.classList.add('hidden');
+          lockedResponderIndex = null;
+          // enable all buzzers
+          buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
+        }
+
+        function lockResponder(i) {
+          if (lockedResponderIndex !== null) return; // already locked
+          lockedResponderIndex = i;
+          // disable all buzzers
+          buzzers.querySelectorAll('button').forEach((b, j) => b.disabled = j !== i);
+          responderName.textContent = players[i].name;
+          responseArea.classList.remove('hidden');
+          proposedWord.value = "";
+          proposedWord.focus();
+        }
+
+        function nextRound() {
+          currentRound += 1;
+          roundCounter.textContent = `Manche ${currentRound} / ${roundsToPlay}`;
+          if (currentRound > roundsToPlay) {
+            finishGame();
             return;
           }
-          setStatus(gameStatus, "ok", `Bonne partie, ${data.user.email} !`);
+          drawLetterAndCategory();
+          nextRoundBtn.classList.add('hidden');
+        }
+
+        function startGame() {
+          currentRound = 0;
+          players.forEach(p => p.score = 0);
+          renderScoreboard();
+          setupArea.classList.add('hidden');
+          playArea.classList.remove('hidden');
+          nextRound();
+        }
+
+        function finishGame() {
+          // Determine winner(s)
+          const maxScore = Math.max(...players.map(p => p.score), 0);
+          const winners = players.filter(p => p.score === maxScore).map(p => p.name);
+          setStatus(gameStatus, 'ok', `Partie terminée. Gagnant(s): ${winners.join(', ')} (${maxScore} points)`);
+          setupArea.classList.remove('hidden');
+          playArea.classList.add('hidden');
+        }
+
+        // Actions setup
+        addPlayerBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          const name = playerNameInput.value.trim();
+          if (!name) return;
+          players.push({ name, score: 0 });
+          playerNameInput.value = "";
+          renderPlayers();
+          renderScoreboard();
         });
+        roundsInput.addEventListener('change', () => {
+          const v = Number(roundsInput.value);
+          if (!Number.isFinite(v) || v < 1) return;
+          roundsToPlay = Math.min(Math.max(v, 1), 50);
+        });
+        selectAllCatsBtn.addEventListener('click', (e) => { e.preventDefault(); selectedCategories = new Set(categories); renderCategories(); });
+        clearCatsBtn.addEventListener('click', (e) => { e.preventDefault(); selectedCategories = new Set(); renderCategories(); });
+
+        startGameBtn.addEventListener('click', async (e) => {
+          e.preventDefault();
+          clearStatuses();
+          const { data } = await supabase.auth.getUser();
+          if (!data?.user) { setStatus(gameStatus, 'error', 'Connectez-vous pour jouer.'); setActiveTab('login'); return; }
+          if (players.length < 1) { setStatus(gameStatus, 'error', 'Ajoutez au moins un joueur.'); return; }
+          startGame();
+        });
+        endGameBtn.addEventListener('click', (e) => { e.preventDefault(); finishGame(); });
+
+        validateWordBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (lockedResponderIndex === null) return;
+          const word = (proposedWord.value || "").trim();
+          if (!word) { setStatus(roundStatus, 'error', 'Entrez un mot.'); return; }
+          const startsWith = word[0]?.toUpperCase() === activeLetter;
+          if (!startsWith) { setStatus(roundStatus, 'error', `Le mot doit commencer par ${activeLetter}.`); return; }
+          // Attribution du point
+          players[lockedResponderIndex].score += 1;
+          renderScoreboard();
+          setStatus(roundStatus, 'ok', `+1 point pour ${players[lockedResponderIndex].name}`);
+          nextRoundBtn.classList.remove('hidden');
+          // disable buzzers until next round
+          buzzers.querySelectorAll('button').forEach(b => b.disabled = true);
+        });
+
+        rejectWordBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (lockedResponderIndex === null) return;
+          setStatus(roundStatus, 'warn', 'Réponse refusée.');
+          // unlock all buzzers again for this round
+          lockedResponderIndex = null;
+          responseArea.classList.add('hidden');
+          buzzers.querySelectorAll('button').forEach(b => b.disabled = false);
+        });
+
+        nextRoundBtn.addEventListener('click', (e) => { e.preventDefault(); nextRound(); });
+
+        // Initial render for setup
+        renderPlayers();
+        renderCategories();
 
         function handleHashForRecovery() {
           const hash = window.location.hash || "";

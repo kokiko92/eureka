@@ -612,6 +612,8 @@
             .subscribe();
         }
 
+        let lastTotalScore = 0;
+
         async function subscribeRoom(code) {
           unsubscribeRoom();
           roomChannel = supabase.channel('room-' + code)
@@ -630,6 +632,15 @@
               playersInRoom = (data || []).map(r => ({ user_id: r.user_id, name: r.name, score: r.score || 0 }));
               renderBuzzers();
               renderScoreboard();
+              // Détection d'un point marqué → avancer automatiquement si hôte
+              const total = playersInRoom.reduce((s, p) => s + (p.score || 0), 0);
+              if (isHost && total > lastTotalScore && lastGameRow?.status === 'playing') {
+                lastTotalScore = total;
+                // Nettoyer l'UI de proposition et passer à la manche suivante
+                await hostNextRound();
+              } else {
+                lastTotalScore = total;
+              }
             })
             .subscribe();
         }
@@ -658,6 +669,7 @@
           playersInRoom = (plist || []).map(r => ({ user_id: r.user_id, name: r.name, score: r.score || 0 }));
           renderBuzzers();
           renderScoreboard();
+          lastTotalScore = playersInRoom.reduce((s, p) => s + (p.score || 0), 0);
         }
 
         createGameBtn.addEventListener('click', async (e) => { e.preventDefault(); await createGame(); });
